@@ -101,9 +101,9 @@ for epoch in range(num_epochs):
         enc_inputs, dec_inputs, dec_outputs_true = enc_inputs.cuda(), dec_inputs.cuda(), dec_outputs_true.cuda()
         outputs = model(enc_inputs, dec_inputs) # outputs: [batch_size * tgt_len, tgt_vocab_size]
 
-        print("pred: ", outputs.shape, outputs)
-        print("true: ", dec_outputs_true.view(-1).shape, dec_outputs_true.view(-1))
-        loss = criterion(outputs, dec_outputs_true.view(-1))  # 将dec_outputs展平成一维张量
+        # print("pred: ", outputs.shape, outputs)
+        # print("true: ", dec_outputs_true.view(-1).shape, dec_outputs_true.view(-1))
+        loss = criterion(outputs, dec_outputs_true.view(-1))  # 将flatten dec_outputs_true作为target
 
         # weight updates
         optimizer.zero_grad()
@@ -111,7 +111,7 @@ for epoch in range(num_epochs):
         optimizer.step()
 
         print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
-        break
+        # break
 
 torch.save(model, 'MyTransformer.pth')
 

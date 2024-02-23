@@ -46,11 +46,9 @@ def get_attn_pad_mask(seq_q, seq_k):
     seq_q: [batch_size, len_q]
     seq_k: [batch_size, len_k]
     '''
-    print(f"@@@@@@@@@@ debugging: {seq_q.size()}, {seq_k.size()}")
     batch_size, len_q = seq_q.size()
     _,          len_k = seq_k.size()
     # seq_k.data.eq(0):，element in seq_k will be True (if ele == 0), False otherwise.
-    # broadcast
     pad_attn_mask = seq_k.data.eq(0).unsqueeze(1) # pad_attn_mask: [batch_size,1,len_k]
 
     # To provide a k for each q, so the second dimension is expanded q times.
@@ -59,7 +57,7 @@ def get_attn_pad_mask(seq_q, seq_k):
     return pad_attn_mask.expand(batch_size, len_q, len_k) # return: [batch_size, len_q, len_k]
     # Return batch_size len_q * len_k matrix, content is True and False, True means the position is a placeholder.
     # The i-th row and the j-th column indicate whether the attention of the i-th word of the query to the j-th word of the key is meaningless. If it is meaningless, it is True. If it is meaningful, it is False (that is, the position of the padding is True)
-    
+
 
 # To prevent positions from attending to subsequent positions
 def get_attn_subsequence_mask(seq):
@@ -87,21 +85,24 @@ class ScaledDotProductAttention(nn.Module):
 
     def forward(self, Q, K, V, attn_mask):
         '''
-        Q: [batch_size, n_heads, len_q, d_k]
+        Q: [batch_size, n_heads, len_q, d_k]  
         K: [batch_size, n_heads, len_k, d_k]
         V: [batch_size, n_heads, len_v(=len_k), d_v] 
         Two types of attention:
         1) self attention
         2) cross attention: K and V are encoder's output, so the shape of K and V are the same
         attn_mask: [batch_size, n_heads, seq_len, seq_len]
-        # todo: len_q and len_k may be different???
+        
+        # len_q is not necessary to be euqal to len_k
+        because len_q is the length of the query sentence (decoder input, or predicted sentence in the 2) attention operation),
+        and len_k is the length of the key sentence (encoder input, or source sentence).
         '''
         batch_size, n_heads, len_q, d_k = Q.shape 
         # 1) computer attention score QK^T/sqrt(d_k)
         scores = torch.matmul(Q, K.transpose(-1, -2)) / np.sqrt(d_k) # scores: [batch_size, n_heads, len_q, len_k]
         # 2) mask operation (option), only used in the decoder
         if attn_mask is not None:
-            scores.masked_fill_(attn_mask, -1e9) # or float('-inf')
+            scores.masked_fill_(attn_mask, float('-inf')) # or float('-inf'), -1e9: negative infinity
             # Fills elements of self tensor with value where mask is True.
             # The masked elements in the scores are replaced by -1e9, 
             # so that the softmax operation will make the value of the masked position close to 0.
@@ -409,16 +410,16 @@ class Transformer(nn.Module):
         # padding mask for decoder self attention: dec_self_attn_pad_mask
         tgt_key_padding_mask = get_attn_pad_mask(tgt, tgt) # [batch_size, tgt_len, tgt_len]
         
+        # encoder-decoder cross attention mask: cross_attn_mask
+        memory_key_padding_mask = get_attn_pad_mask(tgt, src) #[batch_size, tgt_len, src_len]
+        
         # sequence mask (only exists in decoder)
         tgt_mask = get_attn_subsequence_mask(tgt) # [batch_size, tgt_len, tgt_len]
         
         if tgt_key_padding_mask.is_cuda:
             tgt_mask = tgt_mask.cuda()
-        # # encoder-decoder cross attention mask
-        # cross_attn_mask = get_attn_pad_mask(dec_inputs, enc_outputs)
-        # # cross_attn_mask: [batch_size, tgt_len, src_len]
         
-        return  tgt_mask, src_key_padding_mask, tgt_key_padding_mask
+        return  tgt_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask
 
 
     def forward(self, enc_inputs, dec_inputs):
@@ -431,25 +432,21 @@ class Transformer(nn.Module):
         tgt_emb = self.pos_embedding(self.tgt_tok_emb(dec_inputs))
         
         # prepare masks
-        tgt_mask, src_key_padding_mask, tgt_key_padding_mask = self.create_masks(enc_inputs, dec_inputs)
-        
+        tgt_mask, src_key_padding_mask, tgt_key_padding_mask, memory_key_padding_mask = self.create_masks(enc_inputs, dec_inputs)
         
         # encoding
         enc_outputs = self.Encoder(src_emb, src_key_padding_mask)
         # enc_outputs: [batch_size, src_len, d_model]
         
         # decoding
-        dec_outputs = self.Decoder(tgt_emb, enc_outputs, tgt_key_padding_mask, tgt_mask, src_key_padding_mask)
+        dec_outputs = self.Decoder(tgt_emb, enc_outputs, tgt_key_padding_mask, tgt_mask, memory_key_padding_mask)
         # dec_outputs: [batch_size, tgt_len, d_model]
         
         # projection
         dec_logits = self.generator(dec_outputs)
         # dec_logits: [batch_size, tgt_len, tgt_vocab_size]
         
-        # return dec_logits
-        # 解散batch，一个batch中有batch_size个句子，每个句子有tgt_len个词（即tgt_len行），
-        # 现在让他们按行依次排布，如前tgt_len行是第一个句子的每个词的预测概率，
-        # 再往下tgt_len行是第二个句子的，一直到batch_size * tgt_len行
         return dec_logits.view(-1, dec_logits.size(-1))  #  [batch_size * tgt_len, tgt_vocab_size]
-        '''最后变形的原因是：nn.CrossEntropyLoss接收的输入的第二个维度必须是类别'''
-
+        # there are batch_size sentences in one batch
+        # first tgt_len words are the prediction probability of the first sentence,
+        # then the next tgt_len words are the prediction probability of the second sentence, and so on.
